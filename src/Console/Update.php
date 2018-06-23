@@ -15,7 +15,8 @@ class Update extends Command
      */
     protected $signature = 'currency:update
                                 {--o|openexchangerates : Get rates from OpenExchangeRates.org}
-                                {--g|google : Get rates from Google Finance}';
+                                {--g|google : Get rates from Google Finance}
+                                {--b|banxico : Get rates from Banxico}';
 
     /**
      * The console command description.
@@ -76,6 +77,16 @@ class Update extends Command
             // Get rates from OpenExchangeRates
             return $this->updateFromOpenExchangeRates($defaultCurrency, $api);
         }
+
+        if ($this->input->getOption('banxico')) {
+            if ($defaultCurrency !== 'MXN') {
+                $this->error('Banxico only works from MXN to USD');
+
+                return;
+            }
+            // Get rates from Banxico
+            return $this->updateFromBanxico($defaultCurrency);
+        }
     }
 
     /**
@@ -112,6 +123,58 @@ class Update extends Command
         $this->currency->clearCache();
 
         $this->info('Update!');
+    }
+
+    /**
+     * Fetch rates from Banxico (only from MXN to USD)
+     *
+     * @param $defaultCurrency
+     */
+    private function updateFromBanxico($defaultCurrency)
+    {
+        $this->info('Updating currency exchange rates from Banxico');
+
+        foreach ($this->currency->getDriver()->all() as $code => $value) {
+            // Don't update the default currency, the value is always 1
+            if ($code !== 'USD') {
+                continue;
+            }
+
+            $client = new \SoapClient(
+                null,
+                [
+                    'location' => 'http://www.banxico.org.mx:80/DgieWSWeb/DgieWS?WSDL',
+                    'uri'      => 'http://DgieWSWeb/DgieWS?WSDL',
+                    'encoding' => 'ISO-8859-1',
+                    'trace'    => 1
+                ]
+            );
+
+            try {
+                $result = $client->tiposDeCambioBanxico();
+                if (!empty($result)) {
+                    $dom = new \DomDocument();
+                    $dom->loadXML($result);
+                    $xmlDatos = $dom->getElementsByTagName("Obs");
+                    if ($xmlDatos->length > 1) {
+                        $item = $xmlDatos->item(1);
+                        $fecha_tc = $item->getAttribute('TIME_PERIOD');
+                        $rate = $item->getAttribute('OBS_VALUE');
+                    }
+                }
+            } catch (\SoapFault $e) {
+                \Log::error($e->getMessage());
+            }
+
+            if ($rate) {
+                $this->currency->getDriver()->update($code, [
+                    'exchange_rate' => $rate,
+                ]);
+            } else {
+                $this->warn('Can\'t update rate for ' . $code);
+                continue;
+            }
+        }
     }
 
     /**
